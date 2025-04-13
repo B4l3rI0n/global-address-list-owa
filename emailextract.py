@@ -1,85 +1,85 @@
-# Extraction of the Global Address List (GAL) on Exchange >=2013 servers via Outlook Web Access (OWA) 
-# By Pigeonburger, June 2021
-# https://github.com/pigeonburger
+import requests, json, argparse, urllib3, csv
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# module import heehoo
-import requests, json, argparse
-
-# argparser hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
-parser = argparse.ArgumentParser(description="Extract the Global Address List (GAL) on Exchange 2013 servers via Outlook Web Access (OWA)")
-parser.add_argument("-i", "--host", dest="hostname",
-                  help="Hostname for the Exchange Server", metavar="HOSTNAME", type=str, required=True)
-parser.add_argument("-u", "--username", dest="username",
-                  help="A username to log in", metavar="USERNAME", type=str, required=True)
-parser.add_argument("-p", "--password", dest="password",
-                  help="A password to log in", metavar="PASSWORD", type=str, required=True)
-parser.add_argument("-o", "--output-file", dest="output",
-                  help="Specify file to output emails to (default is global_address_list.txt)", metavar="OUTPUT FILE", type=str, default="global_address_list.txt")
+parser = argparse.ArgumentParser(description="Extract the Global Address List (GAL) on Exchange 2013+ servers via OWA")
+parser.add_argument("-i", "--host", dest="hostname", required=True, type=str,
+                    help="Hostname for the Exchange Server (e.g. mail.domain.com)")
+parser.add_argument("-u", "--username", dest="username", required=True, type=str,
+                    help="Username to log in")
+parser.add_argument("-p", "--password", dest="password", required=True, type=str,
+                    help="Password to log in")
+parser.add_argument("-o", "--output-file", dest="output", default="global_address_list.txt", type=str,
+                    help="Output file (default: global_address_list.txt)")
+parser.add_argument("--format", dest="output_format", choices=["txt", "csv", "json"], default="txt",
+                    help="Output format: txt (default), csv, or json")
+parser.add_argument("--filter", dest="query", default=None,
+                    help="Search filter string (e.g., IT, John, Admin)")
 
 args = parser.parse_args()
+
+print("""
+==============================================
+     📬 Exchange GAL Extractor via OWA
+     🔧 Modified by B4l3rI0n | Original: Pigeonburger
+==============================================
+""")
 
 url = args.hostname
 USERNAME = args.username
 PASSWORD = args.password
 OUTPUT = args.output
+FORMAT = args.output_format
+QUERY = args.query
+session = requests.Session()
 
+print(f"[+] Connecting to {url}/owa ...")
 
-# Start the session
-s = requests.Session()
-print("Connecting to %s/owa" % url)
-
-
-# Get OWA landing page
-# Add https:// scheme if not already added in the --host arg
 try:
-    s.get(url+"/owa")
+    session.get(url + "/owa", verify=False)
     URL = url
 except requests.exceptions.MissingSchema:
-    s.get("https://"+url+"/owa")
-    URL = "https://"+url
+    session.get("https://" + url + "/owa", verify=False)
+    URL = "https://" + url
 
-
-# Other URLs we need later
-AUTH_URL = URL+"/owa/auth.owa"
+AUTH_URL = URL + "/owa/auth.owa"
 PEOPLE_FILTERS_URL = URL + "/owa/service.svc?action=GetPeopleFilters"
 FIND_PEOPLE_URL = URL + "/owa/service.svc?action=FindPeople"
 
+login_data = {
+    "username": USERNAME,
+    "password": PASSWORD,
+    "destination": URL,
+    "flags": "4",
+    "forcedownlevel": "0"
+}
 
-# Attempt a login to OWA
-login_data={"username":USERNAME, "password":PASSWORD, 'destination': URL, 'flags': '4', 'forcedownlevel': '0'}
-r = s.post(AUTH_URL, data=login_data, headers={'user-agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"})
+headers = {
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
+}
 
+response = session.post(AUTH_URL, data=login_data, headers=headers, verify=False)
 
-# The Canary is a unique ID thing provided upon a successful login that's also required in the header for the next few requests to be successful.
-# Even upon an incorrect login, OWA still gives a 200 status, so we can also check if the login was successful by seeing if this cookie was set or not.
-try:
-    session_canary = s.cookies['X-OWA-CANARY']
-except:
-    exit("\nInvalid Login Details. Login Failed.")
-print("\nLogin Successful!\nCanary key:", session_canary)
+if "X-OWA-CANARY" not in session.cookies or "logoff" not in response.text.lower():
+    exit("[-] Invalid login or session failed. Check credentials or OWA response.")
 
+session_canary = session.cookies["X-OWA-CANARY"]
+print("[+] Login successful! Canary token:", session_canary)
 
-# Returns an object containing the IDs of all accessible address lists, so we can specify one in the FindPeople request
-r = s.post(PEOPLE_FILTERS_URL, headers={'Content-type': 'application/json', 'X-OWA-CANARY': session_canary, 'Action': 'GetPeopleFilters'}, data={}).json()
+filters = session.post(
+    PEOPLE_FILTERS_URL,
+    headers={'Content-type': 'application/json', 'X-OWA-CANARY': session_canary, 'Action': 'GetPeopleFilters'},
+    data={}, verify=False).json()
 
-
-# Find the Global Address List id
-for i in r:
-    if i['DisplayName'] == "Default Global Address List":
-        AddressListId = i['FolderId']['Id']
-        print("Global List Address ID:", AddressListId)
+for f in filters:
+    if f['DisplayName'] == "Default Global Address List":
+        AddressListId = f['FolderId']['Id']
+        print("[+] Global Address List ID:", AddressListId)
         break
+else:
+    exit("[-] Global Address List not found.")
 
-
-# Set to None to return all emails in the list (this is the search term for the FindPeople request)
-query = None
-
-
-# Set the max results for the FindPeople request.
 max_results = 99999
 
-
-# POST data for the FindPeople request
 peopledata = {
     "__type": "FindPeopleJsonRequest:#Exchange",
     "Header": {
@@ -101,7 +101,7 @@ peopledata = {
             "Offset": 0,
             "MaxEntriesReturned": max_results
         },
-        "QueryString": query,
+        "QueryString": QUERY,
         "ParentFolderId": {
             "__type": "TargetFolderId:#Exchange",
             "BaseFolderId": {
@@ -117,19 +117,39 @@ peopledata = {
     }
 }
 
+print("[*] Fetching GAL entries...")
 
-# Make da request.
-r = s.post(FIND_PEOPLE_URL, headers={'Content-type': 'application/json', 'X-OWA-CANARY': session_canary, 'Action': 'FindPeople'}, data=json.dumps(peopledata)).json()
+response = session.post(
+    FIND_PEOPLE_URL,
+    headers={'Content-type': 'application/json', 'X-OWA-CANARY': session_canary, 'Action': 'FindPeople'},
+    data=json.dumps(peopledata), verify=False).json()
 
+userlist = response['Body']['ResultSet']
+if not userlist:
+    exit("[-] No users found. Possibly no access or GAL is empty.")
 
-# Parse out the emails, print them and append them to a file.
-userlist = r['Body']['ResultSet']
-
-with open(OUTPUT, 'a+') as outputfile:
-    for user in userlist:
+emails = set()
+for user in userlist:
+    try:
         email = user['EmailAddresses'][0]['EmailAddress']
-        outputfile.write(email+"\n")
-        print(email)
+        emails.add(email)
+    except (KeyError, IndexError):
+        continue
 
-print("\nFetched %s emails" % str(len(userlist)))
-print("Emails written to", OUTPUT)
+print(f"[+] Fetched {len(emails)} unique email(s).")
+
+if FORMAT == "txt":
+    with open(OUTPUT, 'w') as f:
+        for email in sorted(emails):
+            f.write(email + "\n")
+elif FORMAT == "csv":
+    with open(OUTPUT if OUTPUT.endswith(".csv") else OUTPUT + ".csv", 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Email'])
+        for email in sorted(emails):
+            writer.writerow([email])
+elif FORMAT == "json":
+    with open(OUTPUT if OUTPUT.endswith(".json") else OUTPUT + ".json", 'w') as f:
+        json.dump(sorted(list(emails)), f, indent=4)
+
+print(f"[✓] Output written to {OUTPUT}")
