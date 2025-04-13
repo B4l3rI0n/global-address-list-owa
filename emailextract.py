@@ -32,23 +32,32 @@ FORMAT = args.output_format
 QUERY = args.query
 session = requests.Session()
 
+# Add schema if missing
+if not url.startswith(('http://', 'https://')):
+    url = "https://" + url
+
 print(f"[+] Connecting to {url}/owa ...")
 
 try:
-    session.get(url + "/owa", verify=False)
-    URL = url
+    response = session.get(url + "/owa", verify=False)
+    response.raise_for_status()  # Raise an exception for HTTP errors
 except requests.exceptions.MissingSchema:
-    session.get("https://" + url + "/owa", verify=False)
-    URL = "https://" + url
+    print("[-] No schema (https:// or http://) included in the URL. Defaulting to https://")
+    url = "https://" + url
+except requests.exceptions.ConnectionError:
+    exit(f"[-] Failed to establish a connection to {url}. Ensure the domain exists and is reachable.")
+except requests.exceptions.RequestException as e:
+    exit(f"[-] An error occurred while connecting to the server: {str(e)}")
 
-AUTH_URL = URL + "/owa/auth.owa"
-PEOPLE_FILTERS_URL = URL + "/owa/service.svc?action=GetPeopleFilters"
-FIND_PEOPLE_URL = URL + "/owa/service.svc?action=FindPeople"
+# Ensure OWA is reachable
+AUTH_URL = url + "/owa/auth.owa"
+PEOPLE_FILTERS_URL = url + "/owa/service.svc?action=GetPeopleFilters"
+FIND_PEOPLE_URL = url + "/owa/service.svc?action=FindPeople"
 
 login_data = {
     "username": USERNAME,
     "password": PASSWORD,
-    "destination": URL,
+    "destination": url,
     "flags": "4",
     "forcedownlevel": "0"
 }
@@ -57,7 +66,11 @@ headers = {
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
 }
 
-response = session.post(AUTH_URL, data=login_data, headers=headers, verify=False)
+try:
+    response = session.post(AUTH_URL, data=login_data, headers=headers, verify=False)
+    response.raise_for_status()  # Raise an exception for HTTP errors
+except requests.exceptions.RequestException as e:
+    exit(f"[-] Failed to log in: {str(e)}")
 
 if "X-OWA-CANARY" not in session.cookies or "logoff" not in response.text.lower():
     exit("[-] Invalid login or session failed. Check credentials or OWA response.")
